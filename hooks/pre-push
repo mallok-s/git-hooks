@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# Global pre-push hook
+# Chains to local repo hook first, then runs custom logic
+
+# --- Chain to local repo hook first ---
+LOCAL_HOOK="$(git rev-parse --git-dir)/hooks/pre-push"
+if [ -x "$LOCAL_HOOK" ]; then
+    "$LOCAL_HOOK" "$@" || exit $?
+fi
+
+# --- Custom global logic ---
+
+# === Large PR Warning ===
+# Warn if EITHER threshold is exceeded
+# Override with environment variables
+MAX_FILES=${GIT_HOOKS_PR_MAX_FILES:-10}
+MAX_LINES=${GIT_HOOKS_PR_MAX_LINES:-200}
+
+# Detect base branch
+if git show-ref --verify --quiet refs/heads/main; then
+    BASE="main"
+elif git show-ref --verify --quiet refs/heads/master; then
+    BASE="master"
+else
+    exit 0
+fi
+
+# Get current branch
+CURRENT=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
+
+# Skip if on base branch
+[ "$CURRENT" = "$BASE" ] && exit 0
+
+# Check if base branch exists on remote
+git rev-parse --verify "origin/$BASE" >/dev/null 2>&1 || exit 0
+
+# Calculate diff stats against base
+STATS=$(git diff --shortstat "origin/$BASE"...HEAD 2>/dev/null) || exit 0
+[ -z "$STATS" ] && exit 0
+
+# Parse stats: " X files changed, Y insertions(+), Z deletions(-)"
+FILES=$(echo "$STATS" | grep -oE '[0-9]+ file' | grep -oE '[0-9]+' || echo "0")
+INSERTIONS=$(echo "$STATS" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo "0")
+DELETIONS=$(echo "$STATS" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo "0")
+TOTAL_LINES=$((INSERTIONS + DELETIONS))
+
+# Check thresholds (warn if EITHER exceeded)
+WARNINGS=""
+[ "$FILES" -gt "$MAX_FILES" ] && WARNINGS="${WARNINGS}  Files: ${FILES} (limit: ${MAX_FILES})\n"
+[ "$TOTAL_LINES" -gt "$MAX_LINES" ] && WARNINGS="${WARNINGS}  Lines: ${TOTAL_LINES} (limit: ${MAX_LINES})\n"
+
+[ -z "$WARNINGS" ] && exit 0
+
+# Show warning
+echo ""
+echo "Large PR warning (vs origin/$BASE):"
+echo -e "$WARNINGS"
+echo "Consider splitting into smaller PRs for easier review."
+echo ""
+
+# Interactive prompt
+if [ -t 0 ]; then
+    read -p "Continue with push? [Y/n] " answer < /dev/tty
+    if [[ "$answer" =~ ^[Nn] ]]; then
+        echo "Push aborted."
+        exit 1
+    fi
+else
+    echo "(non-interactive mode, proceeding)"
+fi
+
+exit 0

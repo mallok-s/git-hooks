@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# Global pre-commit hook
+# Chains to local repo hook first, then runs custom logic
+
+set -e
+
+# --- Chain to local repo hook first (e.g., pre-commit framework) ---
+LOCAL_HOOK="$(git rev-parse --git-dir)/hooks/pre-commit"
+if [ -x "$LOCAL_HOOK" ]; then
+    "$LOCAL_HOOK" "$@" || exit $?
+fi
+
+# --- Custom global logic ---
+
+# === Large File Prevention ===
+# Default 1MB limit, override with GIT_HOOKS_MAX_FILE_SIZE (in bytes)
+MAX_SIZE=${GIT_HOOKS_MAX_FILE_SIZE:-1048576}
+MAX_SIZE_HUMAN=$(numfmt --to=iec $MAX_SIZE 2>/dev/null || echo "${MAX_SIZE} bytes")
+
+LARGE_FILES=""
+while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    [ -f "$file" ] || continue
+
+    SIZE=$(wc -c < "$file" | tr -d ' ')
+    if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+        SIZE_HUMAN=$(numfmt --to=iec $SIZE 2>/dev/null || echo "${SIZE} bytes")
+        LARGE_FILES="${LARGE_FILES}  ${file} (${SIZE_HUMAN})\n"
+    fi
+done <<< "$(git diff --cached --name-only --diff-filter=ACM)"
+
+if [ -n "$LARGE_FILES" ]; then
+    echo ""
+    echo "Blocked: Files exceed ${MAX_SIZE_HUMAN} limit:"
+    echo -e "$LARGE_FILES"
+    echo "Use 'git reset HEAD <file>' to unstage."
+    echo "Or set GIT_HOOKS_MAX_FILE_SIZE to override (in bytes)."
+    exit 1
+fi
+
+# === Comment Review ===
+# Extract comment lines from staged changes
+# Supports: // (JS, TS, C, Go, Rust) and # (Python, Ruby, Shell, YAML)
+COMMENTS=$(git diff --cached --diff-filter=ACM -U0 | \
+    awk '
+    /^diff --git/ { file = $3; gsub("^a/", "", file) }
+    /^@@/ {
+        # Parse line number from @@ -X,Y +N,M @@
+        match($0, /\+([0-9]+)/, arr)
+        line = arr[1] - 1
+    }
+    /^\+/ && !/^\+\+\+/ {
+        line++
+        # Match comment lines (trimmed)
+        gsub(/^\+[ \t]*/, "", $0)
+        if (/^\/\// || /^#[^!]/ || /^#$/) {
+            print "  " file ":" line "  " $0
+        }
+    }
+    ')
+
+# If no comments found, exit successfully
+[ -z "$COMMENTS" ] && exit 0
+
+# Show comments
+echo ""
+echo "Comments in staged changes:"
+echo "$COMMENTS"
+echo ""
+
+# Interactive prompt if in a terminal
+if [ -t 0 ]; then
+    read -p "Proceed with commit? [Y/n] " answer < /dev/tty
+    if [[ "$answer" =~ ^[Nn] ]]; then
+        echo "Commit aborted. Remove unwanted comments and re-stage."
+        exit 1
+    fi
+else
+    echo "(non-interactive mode, proceeding)"
+fi
+
+exit 0

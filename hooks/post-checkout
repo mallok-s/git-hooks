@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# Global post-checkout hook
+# Chains to local repo hook first, then runs custom logic
+
+set -e
+
+PREV_HEAD="$1"
+NEW_HEAD="$2"
+BRANCH_CHECKOUT="$3"
+
+# --- Chain to local repo hook first ---
+LOCAL_HOOK="$(git rev-parse --git-dir)/hooks/post-checkout"
+if [ -x "$LOCAL_HOOK" ]; then
+    "$LOCAL_HOOK" "$@" || exit $?
+fi
+
+# --- Custom global logic ---
+
+# Only run on branch checkouts (not file checkouts)
+[ "$BRANCH_CHECKOUT" = "1" ] || exit 0
+
+# Get the current branch name
+BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)" || exit 0
+
+# Auto-update main/master branch
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+    # Check if we have a remote
+    if git remote | grep -q .; then
+        echo "Updating $BRANCH from remote..."
+        git fetch origin "$BRANCH" --quiet && \
+        git merge --ff-only "origin/$BRANCH" --quiet 2>/dev/null && \
+        echo "✓ $BRANCH updated to $(git rev-parse --short HEAD)" || \
+        echo "✗ Could not fast-forward $BRANCH (local commits exist or no network)"
+    fi
+fi
