@@ -47,8 +47,8 @@ COMMENTS=$(git diff --cached --diff-filter=ACM -U0 | \
     /^diff --git/ { file = $3; gsub("^a/", "", file) }
     /^@@/ {
         # Parse line number from @@ -X,Y +N,M @@
-        match($0, /\+([0-9]+)/, arr)
-        line = arr[1] - 1
+        match($0, /\+[0-9]+/)
+        line = substr($0, RSTART+1, RLENGTH-1) - 1
     }
     /^\+/ && !/^\+\+\+/ {
         line++
